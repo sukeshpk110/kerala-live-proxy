@@ -10,14 +10,14 @@ CHANNELS = {
     "keralavision": "3446A6FzW3o"
 }
 
+
+# Small response for cron-job.org
 @app.route("/")
 def home():
-    return jsonify({
-        "service": "Kerala Live Checker",
-        "status": "online",
-        "channels": list(CHANNELS.keys())
-    })
+    return "OK", 200, {"Content-Type": "text/plain"}
 
+
+# Check YouTube channel
 @app.route("/check/<channel>")
 def check(channel):
     video_id = CHANNELS.get(channel)
