@@ -1,49 +1,62 @@
 
 from flask import Flask, jsonify
-import os
 import yt_dlp
 
 app = Flask(__name__)
 
 CHANNELS = {
-    "amrita": "https://www.youtube.com/amritanews/live",
-    "kannur": "https://www.youtube.com/@KannurVisionOnlinenews/live",
-    "keralavision": "https://www.youtube.com/@keralavisionnews24x7/live"
+    "amrita": "0JE1N_HQc1M",
+    "kannur": "ldYhjkWYNDE",
+    "keralavision": "3446A6FzW3o"
 }
 
 @app.route("/")
 def home():
     return jsonify({
-        "service": "Kerala Live Channel Checker",
+        "service": "Kerala Live Checker",
         "status": "online",
         "channels": list(CHANNELS.keys())
     })
 
 @app.route("/check/<channel>")
 def check(channel):
-    if channel not in CHANNELS:
+    video_id = CHANNELS.get(channel)
+
+    if not video_id:
         return jsonify({"error": "Unknown channel"}), 404
 
     options = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "extract_flat": True
+        "noplaylist": True
     }
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(
-                CHANNELS[channel],
+                f"https://www.youtube.com/watch?v={video_id}",
                 download=False
             )
+
+        formats = info.get("formats", [])
 
         return jsonify({
             "channel": channel,
             "title": info.get("title"),
-            "video_id": info.get("id"),
+            "video_id": video_id,
             "is_live": info.get("is_live"),
-            "status": "detected"
+            "live_status": info.get("live_status"),
+            "format_count": len(formats),
+            "available_formats": [
+                {
+                    "format_id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "protocol": f.get("protocol"),
+                    "height": f.get("height")
+                }
+                for f in formats[-15:]
+            ]
         })
 
     except Exception as error:
@@ -52,10 +65,3 @@ def check(channel):
             "status": "error",
             "message": str(error)
         }), 502
-
-
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
-    )
