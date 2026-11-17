@@ -25,14 +25,17 @@ def check(channel):
     if not video_id:
         return jsonify({"error": "Unknown channel"}), 404
 
-    options = {
+   options = {
     "quiet": True,
     "no_warnings": False,
     "skip_download": True,
     "noplaylist": True,
+    "socket_timeout": 20,
+    "extractor_retries": 1,
+    "retries": 1,
     "extractor_args": {
         "youtube": {
-            "player_client": ["web", "mweb", "tv"]
+            "player_client": ["web"]
         }
     }
 }
