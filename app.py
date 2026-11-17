@@ -30,12 +30,12 @@ def check(channel):
         "no_warnings": False,
         "skip_download": True,
         "noplaylist": True,
-        "socket_timeout": 20,
+        "socket_timeout": 30,
         "extractor_retries": 1,
         "retries": 1,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web"]
+                "player_client": ["mweb", "tv", "web_safari"]
             }
         }
     }
