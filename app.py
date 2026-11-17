@@ -26,11 +26,16 @@ def check(channel):
         return jsonify({"error": "Unknown channel"}), 404
 
     options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "noplaylist": True
+    "quiet": True,
+    "no_warnings": False,
+    "skip_download": True,
+    "noplaylist": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["web", "mweb", "tv"]
+        }
     }
+}
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
