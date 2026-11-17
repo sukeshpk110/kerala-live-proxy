@@ -11,19 +11,28 @@ CHANNELS = {
 }
 
 
-# Small response for cron-job.org
+# Simple health check for Render and cron-job.org
 @app.route("/")
 def home():
     return "OK", 200, {"Content-Type": "text/plain"}
 
 
-# Check YouTube channel
+@app.route("/healthz")
+def health():
+    return "OK", 200, {"Content-Type": "text/plain"}
+
+
+# Extract a YouTube live stream
 @app.route("/check/<channel>")
 def check(channel):
-    video_id = CHANNELS.get(channel)
+
+    video_id = CHANNELS.get(channel.lower())
 
     if not video_id:
-        return jsonify({"error": "Unknown channel"}), 404
+        return jsonify({
+            "status": "error",
+            "message": "Unknown channel"
+        }), 404
 
     options = {
         "quiet": True,
@@ -32,16 +41,12 @@ def check(channel):
         "noplaylist": True,
         "socket_timeout": 30,
         "extractor_retries": 1,
-        "retries": 1,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["mweb", "tv", "web_safari"]
-            }
-        }
+        "retries": 1
     }
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
+
             info = ydl.extract_info(
                 f"https://www.youtube.com/watch?v={video_id}",
                 download=False
@@ -51,6 +56,7 @@ def check(channel):
 
         return jsonify({
             "channel": channel,
+            "status": "success",
             "title": info.get("title"),
             "video_id": video_id,
             "is_live": info.get("is_live"),
@@ -61,13 +67,16 @@ def check(channel):
                     "format_id": f.get("format_id"),
                     "ext": f.get("ext"),
                     "protocol": f.get("protocol"),
-                    "height": f.get("height")
+                    "height": f.get("height"),
+                    "url": f.get("url")
                 }
-                for f in formats[-15:]
-            ]
+                for f in formats
+                if f.get("url")
+            ][-15:]
         })
 
     except Exception as error:
+
         return jsonify({
             "channel": channel,
             "status": "error",
