@@ -1,84 +1,97 @@
-
-from flask import Flask, jsonify
+import os
+import requests
 import yt_dlp
+from urllib.parse import urljoin, quote
+from flask import Flask, Response, jsonify, redirect, request
 
 app = Flask(__name__)
 
+# Existing YouTube Live Channel IDs
 CHANNELS = {
     "amrita": "0JE1N_HQc1M",
     "kannur": "ldYhjkWYNDE",
     "keralavision": "3446A6FzW3o"
 }
 
-
-# Simple health check for Render and cron-job.org
+# 1. Home / Health check route for Render and cron-job.org
 @app.route("/")
 def home():
-    return "OK", 200, {"Content-Type": "text/plain"}
+    return jsonify({
+        "status": "running",
+        "channels": list(CHANNELS.keys()),
+        "proxy_usage": "/proxy?url=YOUR_M3U8_URL"
+    })
 
-
-@app.route("/healthz")
+@app.route("/health")
 def health():
-    return "OK", 200, {"Content-Type": "text/plain"}
+    return "OK", 200
 
-
-# Extract a YouTube live stream
-@app.route("/check/<channel>")
-def check(channel):
-
-    video_id = CHANNELS.get(channel.lower())
-
+# 2. Existing YouTube Live Extractor Route
+@app.route("/channel/<name>.m3u8")
+@app.route("/<name>.m3u8")
+def youtube_channel(name):
+    video_id = CHANNELS.get(name.lower())
     if not video_id:
-        return jsonify({
-            "status": "error",
-            "message": "Unknown channel"
-        }), 404
+        return "Channel not found", 404
 
-    options = {
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = {
+        "format": "best[ext=mp4]/best",
         "quiet": True,
-        "no_warnings": False,
-        "skip_download": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "extractor_retries": 1,
-        "retries": 1
+        "no_warnings": True
     }
 
     try:
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            stream_url = info.get("url")
+            if stream_url:
+                return redirect(stream_url)
+            return "Stream URL not found", 404
+    except Exception as e:
+        return str(e), 500
 
-            info = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={video_id}",
-                download=False
-            )
+# 3. Header-Injecting Proxy Route for Smart TV (myTV Best)
+@app.route("/proxy")
+def proxy_stream():
+    target_url = request.args.get("url")
+    if not target_url:
+        return "Missing 'url' parameter", 400
 
-        formats = info.get("formats", [])
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Referer": "https://bhoomtv.org/",
+        "Origin": "https://bhoomtv.org"
+    }
 
-        return jsonify({
-            "channel": channel,
-            "status": "success",
-            "title": info.get("title"),
-            "video_id": video_id,
-            "is_live": info.get("is_live"),
-            "live_status": info.get("live_status"),
-            "format_count": len(formats),
-            "available_formats": [
-                {
-                    "format_id": f.get("format_id"),
-                    "ext": f.get("ext"),
-                    "protocol": f.get("protocol"),
-                    "height": f.get("height"),
-                    "url": f.get("url")
-                }
-                for f in formats
-                if f.get("url")
-            ][-15:]
-        })
+    try:
+        req = requests.get(target_url, headers=headers, stream=True, timeout=15)
+        content_type = req.headers.get("content-type", "")
 
-    except Exception as error:
+        # Rewrite internal M3U8 links so sub-playlists and .ts chunks also use /proxy
+        if ".m3u8" in target_url or "mpegurl" in content_type.lower():
+            base_proxy = f"{request.scheme}://{request.host}/proxy?url="
+            lines = []
+            for line in req.text.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    full_url = urljoin(target_url, stripped)
+                    lines.append(base_proxy + quote(full_url, safe=""))
+                else:
+                    lines.append(line)
+            return Response("\n".join(lines), status=req.status_code, content_type="application/vnd.apple.mpegurl")
 
-        return jsonify({
-            "channel": channel,
-            "status": "error",
-            "message": str(error)
-        }), 502
+        # Stream video segments (.ts) directly
+        def generate():
+            for chunk in req.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+
+        return Response(generate(), status=req.status_code, content_type=content_type)
+
+    except Exception as e:
+        return str(e), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
