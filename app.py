@@ -51,7 +51,7 @@ def youtube_channel(name):
     except Exception as e:
         return str(e), 500
 
-# 3. Header-Injecting Proxy Route for Smart TV (myTV Best)
+# 3. Method 2 Proxy Route for Smart TV & PotPlayer (Forces HLS Content Type & Rewrites Chunks)
 @app.route("/proxy")
 def proxy_stream():
     target_url = request.args.get("url")
@@ -68,7 +68,7 @@ def proxy_stream():
         req = requests.get(target_url, headers=headers, stream=True, timeout=15)
         content_type = req.headers.get("content-type", "")
 
-        # Rewrite internal M3U8 links so sub-playlists and .ts chunks also use /proxy
+        # If it's an M3U8 playlist, rewrite sub-links to route through /proxy too
         if ".m3u8" in target_url or "mpegurl" in content_type.lower():
             base_proxy = f"{request.scheme}://{request.host}/proxy?url="
             lines = []
@@ -79,9 +79,10 @@ def proxy_stream():
                     lines.append(base_proxy + quote(full_url, safe=""))
                 else:
                     lines.append(line)
-            return Response("\n".join(lines), status=req.status_code, content_type="application/vnd.apple.mpegurl")
+            # Force explicit HLS content type so PotPlayer & LG TV accept it instantly
+            return Response("\n".join(lines), status=req.status_code, content_type="application/x-mpegURL")
 
-        # Stream video segments (.ts) directly
+        # Stream binary video segments (.ts) directly
         def generate():
             for chunk in req.iter_content(chunk_size=8192):
                 if chunk:
