@@ -2,3 +2,4 @@ Flask
 gunicorn
 yt-dlp[default]
 requests
+bgutil-ytdlp-pot-provider
