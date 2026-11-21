@@ -36,10 +36,16 @@ def youtube_channel(name):
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
-        "format": "best[ext=mp4]/best",
-        "quiet": True,
-        "no_warnings": True
+    "format": "best",
+    "quiet": False,
+    "verbose": True,
+    "no_warnings": False,
+    "extractor_args": {
+        "youtubepot-bgutilhttp": {
+            "base_url": "http://127.0.0.1:4416"
+        }
     }
+}
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
