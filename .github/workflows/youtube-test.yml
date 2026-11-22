@@ -1,5 +1,5 @@
 
-name: YouTube Cloud Extraction Test
+name: YouTube Cookie Authentication Test
 
 on:
   workflow_dispatch:
@@ -30,12 +30,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
 
+      - name: Prepare private YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          data = os.environ.get("YOUTUBE_COOKIES", "")
+          if not data.strip():
+              raise SystemExit("YOUTUBE_COOKIES secret is empty")
+
+          path = Path("cookies.txt")
+          path.write_text(data, encoding="utf-8")
+          path.chmod(0o600)
+          print("Private cookies file created.")
+          PY
+
       - name: Test Amrita News
         continue-on-error: true
         run: |
-          python -m yt_dlp -v -F --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=0JE1N_HQc1M"
+          python -m yt_dlp -v -F --cookies cookies.txt --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=0JE1N_HQc1M"
 
       - name: Test Kerala Vision News
         continue-on-error: true
         run: |
-          python -m yt_dlp -v -F --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=3446A6FzW3o"
+          python -m yt_dlp -v -F --cookies cookies.txt --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=3446A6FzW3o"
+
+      - name: Remove private cookies
+        if: always()
+        run: |
+          rm -f cookies.txt
