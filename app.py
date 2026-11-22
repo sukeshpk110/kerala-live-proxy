@@ -1,6 +1,8 @@
+
 import os
 import re
 import logging
+import base64
 import requests
 import yt_dlp
 
@@ -12,7 +14,39 @@ app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO)
 
+# ==========================================
+# YouTube Cookies: Load securely from Render
+# ==========================================
+
+COOKIES_FILE = "/tmp/youtube_cookies.txt"
+
+cookies_b64 = os.environ.get("YOUTUBE_COOKIES_B64", "")
+
+if cookies_b64:
+    try:
+        cookie_data = base64.b64decode(
+            cookies_b64.strip(),
+            validate=True
+        )
+
+        with open(COOKIES_FILE, "wb") as cookie_file:
+            cookie_file.write(cookie_data)
+
+        os.chmod(COOKIES_FILE, 0o600)
+        app.logger.info("YouTube cookies loaded successfully")
+
+    except Exception:
+        app.logger.exception("Failed to load YouTube cookies")
+        raise RuntimeError("YouTube cookie loading failed")
+
+else:
+    app.logger.warning("YouTube cookies environment variable is missing")
+
+
+# ==========================================
 # YouTube Live channel IDs
+# ==========================================
+
 CHANNELS = {
     "amrita": "0JE1N_HQc1M",
     "kannur": "ldYhjkWYNDE",
@@ -32,7 +66,10 @@ PLAYER_CLIENTS = [
 ]
 
 
+# ==========================================
 # 1. Home
+# ==========================================
+
 @app.route("/")
 def home():
     return jsonify({
@@ -44,14 +81,20 @@ def home():
     })
 
 
+# ==========================================
 # 2. Health check
+# ==========================================
+
 @app.route("/health")
 @app.route("/healthz")
 def health():
     return "OK", 200
 
 
+# ==========================================
 # 3. Diagnostics
+# ==========================================
+
 @app.route("/diagnostics")
 def diagnostics():
 
@@ -59,6 +102,10 @@ def diagnostics():
         "status": "running",
         "yt_dlp_version": yt_dlp.version.__version__,
         "player_clients": PLAYER_CLIENTS,
+        "youtube_cookies": (
+            "loaded" if os.path.isfile(COOKIES_FILE)
+            else "missing"
+        ),
         "pot_plugin": "unknown",
         "pot_server": "unknown"
     }
@@ -94,7 +141,10 @@ def diagnostics():
     return jsonify(result)
 
 
+# ==========================================
 # 4. YouTube Live extractor
+# ==========================================
+
 @app.route("/channel/<name>.m3u8")
 @app.route("/<name>.m3u8")
 def youtube_channel(name):
@@ -129,6 +179,10 @@ def youtube_channel(name):
             }
         }
     }
+
+    # Use the private YouTube cookies
+    if os.path.isfile(COOKIES_FILE):
+        ydl_opts["cookiefile"] = COOKIES_FILE
 
     try:
 
@@ -176,7 +230,10 @@ def youtube_channel(name):
         }), 500
 
 
+# ==========================================
 # 5. HLS playlist and segment proxy
+# ==========================================
+
 @app.route("/proxy")
 def proxy_stream():
 
@@ -287,6 +344,7 @@ def proxy_stream():
             )
 
             response.headers["Cache-Control"] = "no-store"
+
             return response
 
         def generate():
@@ -306,15 +364,20 @@ def proxy_stream():
         )
 
         response.headers["Cache-Control"] = "no-store"
+
         return response
 
     except Exception as e:
 
         app.logger.exception("Proxy request failed")
+
         return str(e), 500
 
 
+# ==========================================
 # 6. Local development
+# ==========================================
+
 if __name__ == "__main__":
 
     port = int(
