@@ -216,13 +216,14 @@ def youtube_channel(name):
 
         # Find usable HLS formats
         hls_formats = [
-            f for f in formats
-            if f.get("protocol") in (
-                "m3u8",
-                "m3u8_native"
-            )
-            and f.get("url")
-        ]
+    f for f in formats
+    if f.get("protocol") in (
+        "m3u8",
+        "m3u8_native",
+        "https"
+    )
+    and f.get("url")
+]
 
         if not hls_formats:
 
