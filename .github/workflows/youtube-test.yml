@@ -1,0 +1,28 @@
+
+name: YouTube Cloud Extraction Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-youtube:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install yt-dlp
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -U "yt-dlp[default]"
+
+      - name: Test Amrita News
+        run: |
+          python -m yt_dlp -F "https://www.youtube.com/watch?v=0JE1N_HQc1M"
+
+      - name: Test Kerala Vision News
+        run: |
+          python -m yt_dlp -F "https://www.youtube.com/watch?v=3446A6FzW3o"
