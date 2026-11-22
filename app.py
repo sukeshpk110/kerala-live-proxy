@@ -56,7 +56,7 @@ PLAYER_CLIENTS = [
     x.strip()
     for x in os.environ.get(
         "YOUTUBE_PLAYER_CLIENTS",
-       "web"
+        "web"
     ).split(",")
     if x.strip()
 ]
@@ -72,7 +72,7 @@ def home():
         "status": "running",
         "channels": list(CHANNELS.keys()),
         "diagnostics": "/diagnostics",
-        "health": "/health",
+        "health": "/healthz",
         "player_clients": PLAYER_CLIENTS
     })
 
@@ -158,7 +158,6 @@ def youtube_channel(name):
     ydl_opts = {
         "format": "all",
 
-        # Enable Node.js for YouTube JS challenges
         "js_runtimes": {
             "node": {}
         },
@@ -179,13 +178,14 @@ def youtube_channel(name):
         }
     }
 
-    # BGUtil HTTP provider uses its default
-    # local address: http://127.0.0.1:4416
+    # BGUtil PO-token provider
+    # Local server: 127.0.0.1:4416
 
     if os.path.isfile(COOKIES_FILE):
         ydl_opts["cookiefile"] = COOKIES_FILE
 
     try:
+
         app.logger.info(
             "Starting YouTube extraction: %s",
             name
@@ -202,28 +202,65 @@ def youtube_channel(name):
 
         formats = info.get("formats", [])
 
+        live_status = info.get("live_status")
+        is_live = info.get("is_live", False)
+
+        app.logger.info(
+            "CHANNEL STATUS: %s | live=%s",
+            live_status,
+            is_live
+        )
+
+        # Log available formats
+
         app.logger.info(
             "AVAILABLE FORMATS: %s",
             [
                 (
                     f.get("format_id"),
                     f.get("protocol"),
-                    f.get("height")
+                    f.get("height"),
+                    f.get("ext")
                 )
                 for f in formats
             ]
         )
 
-        # Find usable HLS formats
+        # --------------------------------------------------
+        # LIVE BROADCAST CHECK
+        # --------------------------------------------------
+
+        if live_status != "is_live" and not is_live:
+
+            app.logger.warning(
+                "%s is not currently reported as live",
+                name
+            )
+
+            return jsonify({
+                "channel": name,
+                "video_id": video_id,
+                "status": "not_live",
+                "live_status": live_status,
+                "is_live": is_live,
+                "message": (
+                    "YouTube is not reporting an "
+                    "active live broadcast"
+                )
+            }), 503
+
+        # --------------------------------------------------
+        # ACCEPT GENUINE HLS ONLY
+        # --------------------------------------------------
+
         hls_formats = [
-    f for f in formats
-    if f.get("protocol") in (
-        "m3u8",
-        "m3u8_native",
-        "https"
-    )
-    and f.get("url")
-]
+            f for f in formats
+            if f.get("protocol") in (
+                "m3u8",
+                "m3u8_native"
+            )
+            and f.get("url")
+        ]
 
         if not hls_formats:
 
@@ -231,18 +268,23 @@ def youtube_channel(name):
                 "channel": name,
                 "video_id": video_id,
                 "status": "error",
-                "message": "No HLS formats found",
+                "live_status": live_status,
+                "message": "No genuine HLS formats found",
                 "available_formats": [
                     {
                         "format_id": f.get("format_id"),
                         "protocol": f.get("protocol"),
-                        "height": f.get("height")
+                        "height": f.get("height"),
+                        "ext": f.get("ext")
                     }
                     for f in formats
                 ]
             }), 502
 
-        # Highest-resolution HLS format first
+        # --------------------------------------------------
+        # SELECT HIGHEST QUALITY HLS
+        # --------------------------------------------------
+
         hls_formats.sort(
             key=lambda f: (
                 f.get("height") or 0,
@@ -255,9 +297,10 @@ def youtube_channel(name):
         stream_url = selected["url"]
 
         app.logger.info(
-            "Selected HLS format: %s, height=%s",
+            "SELECTED LIVE HLS: %s | height=%s | protocol=%s",
             selected.get("format_id"),
-            selected.get("height")
+            selected.get("height"),
+            selected.get("protocol")
         )
 
         return redirect(stream_url, code=302)
@@ -279,7 +322,7 @@ def youtube_channel(name):
 
 
 # --------------------------------------------------
-# HLS proxy
+# HLS PROXY
 # --------------------------------------------------
 
 @app.route("/proxy")
@@ -317,7 +360,13 @@ def proxy_stream():
         "Origin": "https://www.youtube.com"
     }
 
+    # Forward byte-range requests if supplied
+
+    if request.headers.get("Range"):
+        headers["Range"] = request.headers["Range"]
+
     try:
+
         req = requests.get(
             target_url,
             headers=headers,
@@ -341,6 +390,10 @@ def proxy_stream():
             or "mpegurl" in content_type.lower()
         )
 
+        # --------------------------------------------------
+        # REWRITE HLS PLAYLIST
+        # --------------------------------------------------
+
         if is_playlist:
 
             playlist_url = req.url
@@ -362,6 +415,7 @@ def proxy_stream():
                 if stripped.startswith("#"):
 
                     def replace_uri(match):
+
                         original = match.group(1)
 
                         full_url = urljoin(
@@ -391,49 +445,73 @@ def proxy_stream():
                 )
 
                 lines.append(
-                    base_proxy + quote(
-                        full_url,
-                        safe=""
-                    )
+                    base_proxy
+                    + quote(full_url, safe="")
                 )
 
             req.close()
 
             response = Response(
                 "\n".join(lines) + "\n",
-                content_type="application/vnd.apple.mpegurl"
+                content_type=(
+                    "application/vnd.apple.mpegurl"
+                )
             )
 
             response.headers["Cache-Control"] = "no-store"
 
             return response
 
+        # --------------------------------------------------
+        # STREAM VIDEO / AUDIO SEGMENTS
+        # --------------------------------------------------
+
         def generate():
+
             try:
+
                 for chunk in req.iter_content(
                     chunk_size=16384
                 ):
+
                     if chunk:
                         yield chunk
+
             finally:
                 req.close()
 
         response = Response(
             generate(),
+            status=req.status_code,
             content_type=content_type
         )
+
+        # Preserve relevant upstream headers
+
+        for header in (
+            "Content-Range",
+            "Accept-Ranges",
+            "Content-Length"
+        ):
+
+            if header in req.headers:
+                response.headers[header] = req.headers[header]
 
         response.headers["Cache-Control"] = "no-store"
 
         return response
 
     except Exception as e:
-        app.logger.exception("Proxy request failed")
+
+        app.logger.exception(
+            "Proxy request failed"
+        )
+
         return str(e), 500
 
 
 # --------------------------------------------------
-# Start Flask
+# START FLASK
 # --------------------------------------------------
 
 if __name__ == "__main__":
