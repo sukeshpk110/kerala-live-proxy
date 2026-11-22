@@ -41,7 +41,7 @@ else:
 
 
 # --------------------------------------------------
-# Channel IDs
+# Channel IDs / URLs
 # --------------------------------------------------
 
 CHANNELS = {
@@ -49,6 +49,7 @@ CHANNELS = {
     "kannur": "ldYhjkWYNDE",
     "keralavision": "3446A6FzW3o"
 }
+
 POT_SERVER = "http://127.0.0.1:4416"
 
 PLAYER_CLIENTS = [
@@ -150,12 +151,15 @@ def youtube_channel(name):
     if not video_id:
         return "Channel not found", 404
 
-   if video_id.startswith("http"):
-    youtube_url = video_id
-else:
-    youtube_url = (
-        f"https://www.youtube.com/watch?v={video_id}"
-    )
+    # Accept permanent live-page URLs as well as video IDs
+
+    if video_id.startswith("http"):
+        youtube_url = video_id
+    else:
+        youtube_url = (
+            f"https://www.youtube.com/watch?v={video_id}"
+        )
+
     ydl_opts = {
         "format": "all",
 
@@ -188,8 +192,9 @@ else:
     try:
 
         app.logger.info(
-            "Starting YouTube extraction: %s",
-            name
+            "Starting YouTube extraction: %s | %s",
+            name,
+            youtube_url
         )
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -202,15 +207,18 @@ else:
             return "No video information returned", 502
 
         formats = info.get("formats", [])
+
+        # Update to the actual broadcast video ID
         video_id = info.get("id", video_id)
 
         live_status = info.get("live_status")
         is_live = info.get("is_live", False)
 
         app.logger.info(
-            "CHANNEL STATUS: %s | live=%s",
+            "CHANNEL STATUS: %s | live=%s | video_id=%s",
             live_status,
-            is_live
+            is_live,
+            video_id
         )
 
         # Log available formats
