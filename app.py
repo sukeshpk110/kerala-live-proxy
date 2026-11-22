@@ -160,7 +160,7 @@ def youtube_channel(name):
     )
 
     ydl_opts = {
-        "format": "best",
+        "format": "best[protocol=m3u8_native]/best[protocol=m3u8]/best",
         "quiet": False,
         "verbose": True,
         "no_warnings": False,
