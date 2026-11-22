@@ -195,7 +195,8 @@ def youtube_channel(name):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
            info = ydl.extract_info(youtube_url, download=False)
-app.logger.info("AVAILABLE FORMATS: %s", [(f.get("format_id"), f.get("protocol"), f.get("height")) for f in info.get("formats", [])])
+formats = info.get("formats", [])
+app.logger.info("AVAILABLE FORMATS: %s", [(f.get("format_id"), f.get("protocol")) for f in formats])
             )
 
             if not info:
