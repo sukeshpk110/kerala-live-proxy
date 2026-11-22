@@ -45,11 +45,10 @@ else:
 # --------------------------------------------------
 
 CHANNELS = {
-    "amrita": "0JE1N_HQc1M",
+    "amrita": "https://www.youtube.com/@AmritaNews/live",
     "kannur": "ldYhjkWYNDE",
     "keralavision": "3446A6FzW3o"
 }
-
 POT_SERVER = "http://127.0.0.1:4416"
 
 PLAYER_CLIENTS = [
@@ -151,10 +150,12 @@ def youtube_channel(name):
     if not video_id:
         return "Channel not found", 404
 
+   if video_id.startswith("http"):
+    youtube_url = video_id
+else:
     youtube_url = (
         f"https://www.youtube.com/watch?v={video_id}"
     )
-
     ydl_opts = {
         "format": "all",
 
