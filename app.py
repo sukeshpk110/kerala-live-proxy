@@ -202,6 +202,7 @@ else:
             return "No video information returned", 502
 
         formats = info.get("formats", [])
+        video_id = info.get("id", video_id)
 
         live_status = info.get("live_status")
         is_live = info.get("is_live", False)
