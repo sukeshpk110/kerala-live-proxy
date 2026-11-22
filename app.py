@@ -22,10 +22,15 @@ CHANNELS = {
 
 POT_SERVER = "http://127.0.0.1:4416"
 
-# Can be changed through Render environment variables
-PLAYER_CLIENT = os.environ.get(
-    "YOUTUBE_PLAYER_CLIENT", "mweb"
-)
+# YouTube player clients
+PLAYER_CLIENTS = [
+    x.strip()
+    for x in os.environ.get(
+        "YOUTUBE_PLAYER_CLIENTS",
+        "mweb,tv,web_safari"
+    ).split(",")
+    if x.strip()
+]
 
 
 # 1. Home
@@ -36,11 +41,11 @@ def home():
         "channels": list(CHANNELS.keys()),
         "diagnostics": "/diagnostics",
         "health": "/health",
-        "player_client": PLAYER_CLIENT
+        "player_clients": PLAYER_CLIENTS
     })
 
 
-# 2. Render health check
+# 2. Health check
 @app.route("/health")
 @app.route("/healthz")
 def health():
@@ -54,7 +59,7 @@ def diagnostics():
     result = {
         "status": "running",
         "yt_dlp_version": yt_dlp.version.__version__,
-        "player_client": PLAYER_CLIENT,
+        "player_clients": PLAYER_CLIENTS,
         "pot_plugin": "unknown",
         "pot_server": "unknown"
     }
@@ -106,10 +111,7 @@ def youtube_channel(name):
     )
 
     ydl_opts = {
-        "format": (
-            "best[protocol^=m3u8]/best"
-        ),
-
+        "format": "best",
         "quiet": False,
         "verbose": True,
         "no_warnings": False,
@@ -119,13 +121,10 @@ def youtube_channel(name):
         "retries": 3,
         "extractor_retries": 2,
 
-        "live_from_start": False,
-
         "extractor_args": {
             "youtube": {
-                "player_client": [PLAYER_CLIENT]
+                "player_client": PLAYER_CLIENTS
             },
-
             "youtubepot-bgutilhttp": {
                 "base_url": POT_SERVER
             }
@@ -135,9 +134,9 @@ def youtube_channel(name):
     try:
 
         app.logger.info(
-            "Starting YouTube extraction: %s, client=%s",
+            "Starting extraction: channel=%s clients=%s",
             name,
-            PLAYER_CLIENT
+            PLAYER_CLIENTS
         )
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -148,7 +147,7 @@ def youtube_channel(name):
             )
 
             if not info:
-                return "YouTube returned no video information", 502
+                return "No video information returned", 502
 
             stream_url = info.get("url")
 
@@ -165,20 +164,20 @@ def youtube_channel(name):
     except Exception as e:
 
         app.logger.exception(
-            "YouTube extraction failed for %s",
+            "YouTube extraction failed: %s",
             name
         )
 
         return jsonify({
             "channel": name,
             "video_id": video_id,
-            "player_client": PLAYER_CLIENT,
+            "player_clients": PLAYER_CLIENTS,
             "status": "error",
             "message": str(e)
         }), 500
 
 
-# 5. HLS proxy
+# 5. HLS playlist and segment proxy
 @app.route("/proxy")
 def proxy_stream():
 
@@ -244,11 +243,10 @@ def proxy_stream():
                     lines.append(line)
                     continue
 
-                # Rewrite HLS URI attributes:
-                # EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA, etc.
                 if stripped.startswith("#"):
 
                     def replace_uri(match):
+
                         original = match.group(1)
 
                         full_url = urljoin(
@@ -293,6 +291,7 @@ def proxy_stream():
             return response
 
         def generate():
+
             try:
                 for chunk in req.iter_content(
                     chunk_size=16384
@@ -313,7 +312,6 @@ def proxy_stream():
     except Exception as e:
 
         app.logger.exception("Proxy request failed")
-
         return str(e), 500
 
 
