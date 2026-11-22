@@ -56,7 +56,7 @@ PLAYER_CLIENTS = [
     x.strip()
     for x in os.environ.get(
         "YOUTUBE_PLAYER_CLIENTS",
-        "mweb,tv,web_safari"
+       "web"
     ).split(",")
     if x.strip()
 ]
