@@ -1,5 +1,7 @@
 
 import os
+import re
+import logging
 import requests
 import yt_dlp
 
@@ -8,6 +10,8 @@ from urllib.parse import urljoin, quote, urlparse
 from flask import Flask, Response, jsonify, redirect, request
 
 app = Flask(__name__)
+
+logging.basicConfig(level=logging.INFO)
 
 # YouTube Live channel IDs
 CHANNELS = {
@@ -18,30 +22,39 @@ CHANNELS = {
 
 POT_SERVER = "http://127.0.0.1:4416"
 
+# Can be changed through Render environment variables
+PLAYER_CLIENT = os.environ.get(
+    "YOUTUBE_PLAYER_CLIENT", "mweb"
+)
 
-# 1. Home route
+
+# 1. Home
 @app.route("/")
 def home():
     return jsonify({
         "status": "running",
         "channels": list(CHANNELS.keys()),
         "diagnostics": "/diagnostics",
-        "health": "/health"
+        "health": "/health",
+        "player_client": PLAYER_CLIENT
     })
 
 
-# 2. Health check for Render
+# 2. Render health check
 @app.route("/health")
+@app.route("/healthz")
 def health():
     return "OK", 200
 
 
-# 3. Diagnostics: yt-dlp, plugin and POT server
+# 3. Diagnostics
 @app.route("/diagnostics")
 def diagnostics():
+
     result = {
         "status": "running",
         "yt_dlp_version": yt_dlp.version.__version__,
+        "player_client": PLAYER_CLIENT,
         "pot_plugin": "unknown",
         "pot_server": "unknown"
     }
@@ -82,7 +95,8 @@ def diagnostics():
 @app.route("/<name>.m3u8")
 def youtube_channel(name):
 
-    video_id = CHANNELS.get(name.lower())
+    name = name.lower()
+    video_id = CHANNELS.get(name)
 
     if not video_id:
         return "Channel not found", 404
@@ -92,12 +106,26 @@ def youtube_channel(name):
     )
 
     ydl_opts = {
-        "format": "best",
+        "format": (
+            "best[protocol^=m3u8]/best"
+        ),
+
         "quiet": False,
         "verbose": True,
         "no_warnings": False,
         "noplaylist": True,
+
+        "socket_timeout": 20,
+        "retries": 3,
+        "extractor_retries": 2,
+
+        "live_from_start": False,
+
         "extractor_args": {
+            "youtube": {
+                "player_client": [PLAYER_CLIENT]
+            },
+
             "youtubepot-bgutilhttp": {
                 "base_url": POT_SERVER
             }
@@ -105,6 +133,13 @@ def youtube_channel(name):
     }
 
     try:
+
+        app.logger.info(
+            "Starting YouTube extraction: %s, client=%s",
+            name,
+            PLAYER_CLIENT
+        )
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
             info = ydl.extract_info(
@@ -112,26 +147,38 @@ def youtube_channel(name):
                 download=False
             )
 
+            if not info:
+                return "YouTube returned no video information", 502
+
             stream_url = info.get("url")
 
             if not stream_url:
                 return "Stream URL not found", 404
 
-            return redirect(
-                stream_url,
-                code=302,
-                Response=Response
+            app.logger.info(
+                "Extraction successful: %s",
+                name
             )
 
+            return redirect(stream_url, code=302)
+
     except Exception as e:
+
         app.logger.exception(
             "YouTube extraction failed for %s",
             name
         )
-        return str(e), 500
+
+        return jsonify({
+            "channel": name,
+            "video_id": video_id,
+            "player_client": PLAYER_CLIENT,
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 
-# 5. Proxy for HLS playlists and segments
+# 5. HLS proxy
 @app.route("/proxy")
 def proxy_stream():
 
@@ -143,36 +190,45 @@ def proxy_stream():
     parsed = urlparse(target_url)
 
     if parsed.scheme not in ("http", "https"):
-        return "Only HTTP and HTTPS URLs are allowed", 400
+        return "Invalid URL", 400
 
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
         ),
-        "Referer": "https://bhoomtv.org/",
-        "Origin": "https://bhoomtv.org"
+        "Referer": "https://www.youtube.com/",
+        "Origin": "https://www.youtube.com"
     }
 
     try:
+
         req = requests.get(
             target_url,
             headers=headers,
             stream=True,
-            timeout=20
+            timeout=(15, 30),
+            allow_redirects=True
         )
+
+        if req.status_code >= 400:
+            status = req.status_code
+            req.close()
+            return "Upstream error", status
 
         content_type = req.headers.get(
             "content-type", ""
         )
 
         is_playlist = (
-            ".m3u8" in parsed.path.lower()
+            ".m3u8" in urlparse(req.url).path.lower()
+            or ".m3u8" in parsed.path.lower()
             or "mpegurl" in content_type.lower()
         )
 
         if is_playlist:
 
+            playlist_url = req.url
             lines = []
 
             base_proxy = (
@@ -184,26 +240,52 @@ def proxy_stream():
 
                 stripped = line.strip()
 
-                if stripped and not stripped.startswith("#"):
-
-                    full_url = urljoin(
-                        target_url,
-                        stripped
-                    )
-
-                    lines.append(
-                        base_proxy
-                        + quote(full_url, safe="")
-                    )
-
-                else:
+                if not stripped:
                     lines.append(line)
+                    continue
+
+                # Rewrite HLS URI attributes:
+                # EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA, etc.
+                if stripped.startswith("#"):
+
+                    def replace_uri(match):
+                        original = match.group(1)
+
+                        full_url = urljoin(
+                            playlist_url,
+                            original
+                        )
+
+                        return (
+                            'URI="'
+                            + base_proxy
+                            + quote(full_url, safe="")
+                            + '"'
+                        )
+
+                    line = re.sub(
+                        r'URI="([^"]+)"',
+                        replace_uri,
+                        line
+                    )
+
+                    lines.append(line)
+                    continue
+
+                full_url = urljoin(
+                    playlist_url,
+                    stripped
+                )
+
+                lines.append(
+                    base_proxy
+                    + quote(full_url, safe="")
+                )
 
             req.close()
 
             response = Response(
                 "\n".join(lines) + "\n",
-                status=req.status_code,
                 content_type="application/vnd.apple.mpegurl"
             )
 
@@ -213,7 +295,7 @@ def proxy_stream():
         def generate():
             try:
                 for chunk in req.iter_content(
-                    chunk_size=8192
+                    chunk_size=16384
                 ):
                     if chunk:
                         yield chunk
@@ -222,7 +304,6 @@ def proxy_stream():
 
         response = Response(
             generate(),
-            status=req.status_code,
             content_type=content_type
         )
 
@@ -230,7 +311,9 @@ def proxy_stream():
         return response
 
     except Exception as e:
+
         app.logger.exception("Proxy request failed")
+
         return str(e), 500
 
 
