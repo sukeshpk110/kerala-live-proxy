@@ -59,7 +59,7 @@ else:
 # --------------------------------------------------
 
 CHANNELS = {
-    "amrita": "https://www.youtube.com/@AmritaNews/live",
+    "amrita": "https://www.youtube.com/watch?v=wy-nrc19Jow",
     "kannur": "ldYhjkWYNDE",
     "keralavision": "3446A6FzW3o"
 }
