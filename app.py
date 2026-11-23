@@ -12,13 +12,18 @@ from urllib.parse import urljoin, quote, urlparse
 from flask import Flask, Response, jsonify, redirect, request
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 
 # --------------------------------------------------
 # YOUTUBE COOKIES
 # --------------------------------------------------
 
 COOKIES_FILE = "/tmp/youtube_cookies.txt"
+
 cookies_b64 = os.environ.get("YOUTUBE_COOKIES_B64", "")
 
 if cookies_b64:
@@ -33,13 +38,10 @@ if cookies_b64:
 
         os.chmod(COOKIES_FILE, 0o600)
 
-        # Temporary integrity diagnostic
-        cookie_hash = hashlib.sha256(cookie_data).hexdigest()
-
         app.logger.info(
             "COOKIE CHECK: bytes=%s sha256=%s",
             len(cookie_data),
-            cookie_hash
+            hashlib.sha256(cookie_data).hexdigest()
         )
 
         app.logger.info("YouTube cookies loaded")
@@ -80,6 +82,7 @@ PLAYER_CLIENTS = [
 
 @app.route("/")
 def home():
+
     return jsonify({
         "status": "running",
         "channels": list(CHANNELS.keys()),
@@ -96,6 +99,7 @@ def home():
 @app.route("/health")
 @app.route("/healthz")
 def health():
+
     return "OK", 200
 
 
@@ -114,18 +118,38 @@ def diagnostics():
             "loaded" if os.path.isfile(COOKIES_FILE)
             else "missing"
         ),
+        "cookie_bytes": 0,
+        "cookie_sha256": None,
         "pot_plugin": "unknown",
         "pot_server": "unknown"
     }
 
+    # Cookie integrity check
+    if os.path.isfile(COOKIES_FILE):
+
+        with open(COOKIES_FILE, "rb") as f:
+            cookie_data = f.read()
+
+        result["cookie_bytes"] = len(cookie_data)
+
+        result["cookie_sha256"] = hashlib.sha256(
+            cookie_data
+        ).hexdigest()
+
+    # BGUtil plugin version
     try:
+
         result["pot_plugin"] = version(
             "bgutil-ytdlp-pot-provider"
         )
+
     except PackageNotFoundError:
+
         result["pot_plugin"] = "NOT INSTALLED"
 
+    # BGUtil server
     try:
+
         r = requests.get(
             POT_SERVER + "/ping",
             timeout=5
@@ -142,6 +166,7 @@ def diagnostics():
         }
 
     except Exception as e:
+
         result["pot_server"] = {
             "error": str(e)
         }
@@ -158,20 +183,26 @@ def diagnostics():
 def youtube_channel(name):
 
     name = name.lower()
+
     channel_source = CHANNELS.get(name)
 
     if not channel_source:
         return "Channel not found", 404
 
+    # Permanent live page or fixed video ID
     if channel_source.startswith("http"):
+
         youtube_url = channel_source
+
     else:
+
         youtube_url = (
             "https://www.youtube.com/watch?v="
             + channel_source
         )
 
     ydl_opts = {
+
         "format": "all",
 
         "js_runtimes": {
@@ -195,6 +226,7 @@ def youtube_channel(name):
     }
 
     if os.path.isfile(COOKIES_FILE):
+
         ydl_opts["cookiefile"] = COOKIES_FILE
 
     try:
@@ -215,24 +247,23 @@ def youtube_channel(name):
             os.path.isfile(COOKIES_FILE)
         )
 
-        app.logger.info(
-            "BGUtil server: %s",
-            POT_SERVER
-        )
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
             info = ydl.extract_info(
                 youtube_url,
                 download=False
             )
 
         if not info:
+
             return "No video information returned", 502
 
         formats = info.get("formats", [])
 
         video_id = info.get("id")
+
         live_status = info.get("live_status")
+
         is_live = info.get("is_live", False)
 
         app.logger.info(
@@ -260,11 +291,6 @@ def youtube_channel(name):
         # ------------------------------------------
 
         if live_status != "is_live" and not is_live:
-
-            app.logger.warning(
-                "%s is not currently live",
-                name
-            )
 
             return jsonify({
                 "channel": name,
@@ -323,6 +349,7 @@ def youtube_channel(name):
         )
 
         selected = hls_formats[0]
+
         stream_url = selected["url"]
 
         app.logger.info(
@@ -380,16 +407,20 @@ def proxy_stream():
         return "Host not allowed", 403
 
     headers = {
+
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 Chrome/131.0.0.0 "
             "Safari/537.36"
         ),
+
         "Referer": "https://www.youtube.com/",
+
         "Origin": "https://www.youtube.com"
     }
 
     if request.headers.get("Range"):
+
         headers["Range"] = request.headers["Range"]
 
     try:
@@ -403,8 +434,11 @@ def proxy_stream():
         )
 
         if req.status_code >= 400:
+
             status = req.status_code
+
             req.close()
+
             return "Upstream error", status
 
         content_type = req.headers.get(
@@ -418,12 +452,13 @@ def proxy_stream():
         )
 
         # ------------------------------------------
-        # REWRITE PLAYLIST
+        # REWRITE HLS PLAYLIST
         # ------------------------------------------
 
         if is_playlist:
 
             playlist_url = req.url
+
             lines = []
 
             base_proxy = (
@@ -436,7 +471,9 @@ def proxy_stream():
                 stripped = line.strip()
 
                 if not stripped:
+
                     lines.append(line)
+
                     continue
 
                 if stripped.startswith("#"):
@@ -464,6 +501,7 @@ def proxy_stream():
                     )
 
                     lines.append(line)
+
                     continue
 
                 full_url = urljoin(
@@ -494,13 +532,16 @@ def proxy_stream():
         def generate():
 
             try:
+
                 for chunk in req.iter_content(
                     chunk_size=16384
                 ):
+
                     if chunk:
                         yield chunk
 
             finally:
+
                 req.close()
 
         response = Response(
@@ -514,7 +555,9 @@ def proxy_stream():
             "Accept-Ranges",
             "Content-Length"
         ):
+
             if header in req.headers:
+
                 response.headers[header] = req.headers[header]
 
         response.headers["Cache-Control"] = "no-store"
@@ -534,7 +577,9 @@ def proxy_stream():
 
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", 5000))
+    port = int(
+        os.environ.get("PORT", 5000)
+    )
 
     app.run(
         host="0.0.0.0",
