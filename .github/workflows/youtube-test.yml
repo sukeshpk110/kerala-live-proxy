@@ -41,6 +41,7 @@ jobs:
           PY
 
           yt-dlp \
+            --verbose \
             --cookies cookies.txt \
             --skip-download \
             --no-warnings \
