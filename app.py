@@ -1,4 +1,3 @@
-
 import os
 import re
 import logging
@@ -6,6 +5,8 @@ import base64
 import hashlib
 import requests
 import yt_dlp
+import subprocess
+import shutil
 
 from importlib.metadata import version, PackageNotFoundError
 from urllib.parse import urljoin, quote, urlparse
@@ -33,8 +34,8 @@ if cookies_b64:
             validate=True
         )
 
-        with open(COOKIES_FILE, "wb") as cookie_file:
-            cookie_file.write(cookie_data)
+        with open(COOKIES_FILE, "wb") as f:
+            f.write(cookie_data)
 
         os.chmod(COOKIES_FILE, 0o600)
 
@@ -59,12 +60,14 @@ else:
 # --------------------------------------------------
 
 CHANNELS = {
-    "amrita": "https://www.youtube.com/watch?v=wy-nrc19Jow",
+    "amrita": "https://www.youtube.com/@AmritaNews/live",
     "kannur": "ldYhjkWYNDE",
     "keralavision": "3446A6FzW3o"
 }
 
 POT_SERVER = "http://127.0.0.1:4416"
+
+STREAMLINK_BIN = shutil.which("streamlink") or "streamlink"
 
 PLAYER_CLIENTS = [
     x.strip()
@@ -77,6 +80,104 @@ PLAYER_CLIENTS = [
 
 
 # --------------------------------------------------
+# STREAMLINK VERSION
+# --------------------------------------------------
+
+def get_streamlink_version():
+
+    try:
+        return version("streamlink")
+
+    except PackageNotFoundError:
+        return "NOT INSTALLED"
+
+
+# --------------------------------------------------
+# STREAMLINK EXTRACTION - AMRITA NEWS
+# --------------------------------------------------
+
+def extract_amrita_stream():
+
+    if not os.path.isfile(COOKIES_FILE):
+        raise RuntimeError("YouTube cookies are missing")
+
+    youtube_url = CHANNELS["amrita"]
+
+    command = [
+        STREAMLINK_BIN,
+        "--loglevel", "error",
+        "--http-timeout", "30",
+        "--http-cookies-file", COOKIES_FILE,
+        "--stream-url",
+        youtube_url,
+        "best"
+    ]
+
+    app.logger.info(
+        "Starting Streamlink extraction for Amrita News"
+    )
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False
+    )
+
+    if result.returncode != 0:
+
+        error_text = (result.stderr or result.stdout or "")[-3000:]
+
+        app.logger.error(
+            "Streamlink extraction failed: %s",
+            error_text
+        )
+
+        raise RuntimeError(
+            "Streamlink extraction failed: " + error_text
+        )
+
+    # Find extracted URL
+    output_lines = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip().startswith("https://")
+    ]
+
+    if not output_lines:
+        raise RuntimeError(
+            "Streamlink did not return a stream URL"
+        )
+
+    stream_url = output_lines[-1]
+
+    parsed = urlparse(stream_url)
+
+    if not (
+        parsed.hostname
+        and (
+            parsed.hostname == "googlevideo.com"
+            or parsed.hostname.endswith(".googlevideo.com")
+        )
+    ):
+        raise RuntimeError(
+            "Unexpected Streamlink URL host"
+        )
+
+    if ".m3u8" not in parsed.path.lower():
+        raise RuntimeError(
+            "Extracted URL is not an HLS playlist"
+        )
+
+    app.logger.info(
+        "Amrita News HLS successfully extracted"
+    )
+
+    return stream_url
+
+
+# --------------------------------------------------
 # HOME
 # --------------------------------------------------
 
@@ -86,6 +187,9 @@ def home():
     return jsonify({
         "status": "running",
         "channels": list(CHANNELS.keys()),
+        "amrita_extractor": "Streamlink",
+        "other_extractors": "yt-dlp",
+        "streamlink_version": get_streamlink_version(),
         "diagnostics": "/diagnostics",
         "health": "/healthz",
         "player_clients": PLAYER_CLIENTS
@@ -113,6 +217,8 @@ def diagnostics():
     result = {
         "status": "running",
         "yt_dlp_version": yt_dlp.version.__version__,
+        "streamlink_version": get_streamlink_version(),
+        "streamlink_executable": STREAMLINK_BIN,
         "player_clients": PLAYER_CLIENTS,
         "youtube_cookies": (
             "loaded" if os.path.isfile(COOKIES_FILE)
@@ -124,7 +230,6 @@ def diagnostics():
         "pot_server": "unknown"
     }
 
-    # Cookie integrity check
     if os.path.isfile(COOKIES_FILE):
 
         with open(COOKIES_FILE, "rb") as f:
@@ -136,7 +241,6 @@ def diagnostics():
             cookie_data
         ).hexdigest()
 
-    # BGUtil plugin version
     try:
 
         result["pot_plugin"] = version(
@@ -147,7 +251,6 @@ def diagnostics():
 
         result["pot_plugin"] = "NOT INSTALLED"
 
-    # BGUtil server
     try:
 
         r = requests.get(
@@ -175,7 +278,54 @@ def diagnostics():
 
 
 # --------------------------------------------------
-# YOUTUBE EXTRACTION
+# AMRITA NEWS - STREAMLINK
+# --------------------------------------------------
+
+@app.route("/amrita.m3u8")
+@app.route("/channel/amrita.m3u8")
+def amrita_channel():
+
+    try:
+
+        stream_url = extract_amrita_stream()
+
+        # Send playlist through our HLS proxy
+        proxy_url = (
+            request.url_root.rstrip("/")
+            + "/proxy?url="
+            + quote(stream_url, safe="")
+        )
+
+        return redirect(proxy_url, code=302)
+
+    except subprocess.TimeoutExpired:
+
+        app.logger.exception(
+            "Amrita Streamlink extraction timed out"
+        )
+
+        return jsonify({
+            "channel": "amrita",
+            "status": "error",
+            "message": "Streamlink extraction timed out"
+        }), 504
+
+    except Exception as e:
+
+        app.logger.exception(
+            "Amrita News extraction failed"
+        )
+
+        return jsonify({
+            "channel": "amrita",
+            "extractor": "Streamlink",
+            "status": "error",
+            "message": str(e)
+        }), 502
+
+
+# --------------------------------------------------
+# OTHER CHANNELS - YT-DLP
 # --------------------------------------------------
 
 @app.route("/channel/<name>.m3u8")
@@ -184,40 +334,34 @@ def youtube_channel(name):
 
     name = name.lower()
 
+    if name == "amrita":
+        return amrita_channel()
+
     channel_source = CHANNELS.get(name)
 
     if not channel_source:
         return "Channel not found", 404
 
-    # Permanent live page or fixed video ID
     if channel_source.startswith("http"):
-
         youtube_url = channel_source
-
     else:
-
         youtube_url = (
             "https://www.youtube.com/watch?v="
             + channel_source
         )
 
     ydl_opts = {
-
         "format": "all",
-
         "js_runtimes": {
             "node": {}
         },
-
         "quiet": False,
         "verbose": True,
         "no_warnings": False,
         "noplaylist": True,
-
         "socket_timeout": 30,
         "retries": 3,
         "extractor_retries": 2,
-
         "extractor_args": {
             "youtube": {
                 "player_client": PLAYER_CLIENTS
@@ -226,7 +370,6 @@ def youtube_channel(name):
     }
 
     if os.path.isfile(COOKIES_FILE):
-
         ydl_opts["cookiefile"] = COOKIES_FILE
 
     try:
@@ -237,58 +380,19 @@ def youtube_channel(name):
             youtube_url
         )
 
-        app.logger.info(
-            "Player clients: %s",
-            PLAYER_CLIENTS
-        )
-
-        app.logger.info(
-            "Cookie file present: %s",
-            os.path.isfile(COOKIES_FILE)
-        )
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
             info = ydl.extract_info(
                 youtube_url,
                 download=False
             )
 
         if not info:
-
             return "No video information returned", 502
 
         formats = info.get("formats", [])
-
         video_id = info.get("id")
-
         live_status = info.get("live_status")
-
         is_live = info.get("is_live", False)
-
-        app.logger.info(
-            "CHANNEL STATUS: %s | live=%s | video_id=%s",
-            live_status,
-            is_live,
-            video_id
-        )
-
-        app.logger.info(
-            "AVAILABLE FORMATS: %s",
-            [
-                (
-                    f.get("format_id"),
-                    f.get("protocol"),
-                    f.get("height"),
-                    f.get("ext")
-                )
-                for f in formats
-            ]
-        )
-
-        # ------------------------------------------
-        # LIVE CHECK
-        # ------------------------------------------
 
         if live_status != "is_live" and not is_live:
 
@@ -296,17 +400,8 @@ def youtube_channel(name):
                 "channel": name,
                 "video_id": video_id,
                 "status": "not_live",
-                "live_status": live_status,
-                "is_live": is_live,
-                "message": (
-                    "YouTube is not reporting an "
-                    "active live broadcast"
-                )
+                "live_status": live_status
             }), 503
-
-        # ------------------------------------------
-        # FIND HLS FORMATS
-        # ------------------------------------------
 
         hls_formats = [
             f for f in formats
@@ -323,22 +418,8 @@ def youtube_channel(name):
                 "channel": name,
                 "video_id": video_id,
                 "status": "error",
-                "live_status": live_status,
-                "message": "No genuine HLS formats found",
-                "available_formats": [
-                    {
-                        "format_id": f.get("format_id"),
-                        "protocol": f.get("protocol"),
-                        "height": f.get("height"),
-                        "ext": f.get("ext")
-                    }
-                    for f in formats
-                ]
+                "message": "No genuine HLS formats found"
             }), 502
-
-        # ------------------------------------------
-        # SELECT BEST HLS
-        # ------------------------------------------
 
         hls_formats.sort(
             key=lambda f: (
@@ -349,17 +430,15 @@ def youtube_channel(name):
         )
 
         selected = hls_formats[0]
-
         stream_url = selected["url"]
 
-        app.logger.info(
-            "SELECTED LIVE HLS: %s | height=%s | protocol=%s",
-            selected.get("format_id"),
-            selected.get("height"),
-            selected.get("protocol")
+        proxy_url = (
+            request.url_root.rstrip("/")
+            + "/proxy?url="
+            + quote(stream_url, safe="")
         )
 
-        return redirect(stream_url, code=302)
+        return redirect(proxy_url, code=302)
 
     except Exception as e:
 
@@ -370,8 +449,6 @@ def youtube_channel(name):
 
         return jsonify({
             "channel": name,
-            "source": youtube_url,
-            "player_clients": PLAYER_CLIENTS,
             "status": "error",
             "message": str(e)
         }), 500
@@ -394,33 +471,31 @@ def proxy_stream():
     if parsed.scheme not in ("http", "https"):
         return "Invalid URL", 400
 
-    host = (parsed.hostname or "").lower()
+    def allowed_host(host):
 
-    allowed_hosts = (
-        host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host == "googlevideo.com"
-        or host.endswith(".googlevideo.com")
-    )
+        host = (host or "").lower()
 
-    if not allowed_hosts:
+        return (
+            host == "youtube.com"
+            or host.endswith(".youtube.com")
+            or host == "googlevideo.com"
+            or host.endswith(".googlevideo.com")
+        )
+
+    if not allowed_host(parsed.hostname):
         return "Host not allowed", 403
 
     headers = {
-
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 Chrome/131.0.0.0 "
             "Safari/537.36"
         ),
-
         "Referer": "https://www.youtube.com/",
-
         "Origin": "https://www.youtube.com"
     }
 
     if request.headers.get("Range"):
-
         headers["Range"] = request.headers["Range"]
 
     try:
@@ -433,10 +508,14 @@ def proxy_stream():
             allow_redirects=True
         )
 
+        # Validate final redirect host too
+        if not allowed_host(urlparse(req.url).hostname):
+            req.close()
+            return "Redirect host not allowed", 403
+
         if req.status_code >= 400:
 
             status = req.status_code
-
             req.close()
 
             return "Upstream error", status
@@ -461,8 +540,15 @@ def proxy_stream():
 
             lines = []
 
+            forwarded_proto = request.headers.get(
+                "X-Forwarded-Proto",
+                request.scheme
+            ).split(",")[0].strip()
+
             base_proxy = (
-                request.host_url.rstrip("/")
+                forwarded_proto
+                + "://"
+                + request.host
                 + "/proxy?url="
             )
 
@@ -471,9 +557,7 @@ def proxy_stream():
                 stripped = line.strip()
 
                 if not stripped:
-
                     lines.append(line)
-
                     continue
 
                 if stripped.startswith("#"):
@@ -501,7 +585,6 @@ def proxy_stream():
                     )
 
                     lines.append(line)
-
                     continue
 
                 full_url = urljoin(
@@ -541,7 +624,6 @@ def proxy_stream():
                         yield chunk
 
             finally:
-
                 req.close()
 
         response = Response(
@@ -557,7 +639,6 @@ def proxy_stream():
         ):
 
             if header in req.headers:
-
                 response.headers[header] = req.headers[header]
 
         response.headers["Cache-Control"] = "no-store"
@@ -577,9 +658,7 @@ def proxy_stream():
 
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get("PORT", 5000)
-    )
+    port = int(os.environ.get("PORT", 5000))
 
     app.run(
         host="0.0.0.0",
