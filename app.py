@@ -3,6 +3,7 @@ import os
 import re
 import logging
 import base64
+import hashlib
 import requests
 import yt_dlp
 
@@ -14,7 +15,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # --------------------------------------------------
-# YouTube cookies
+# YOUTUBE COOKIES
 # --------------------------------------------------
 
 COOKIES_FILE = "/tmp/youtube_cookies.txt"
@@ -31,17 +32,28 @@ if cookies_b64:
             cookie_file.write(cookie_data)
 
         os.chmod(COOKIES_FILE, 0o600)
+
+        # Temporary integrity diagnostic
+        cookie_hash = hashlib.sha256(cookie_data).hexdigest()
+
+        app.logger.info(
+            "COOKIE CHECK: bytes=%s sha256=%s",
+            len(cookie_data),
+            cookie_hash
+        )
+
         app.logger.info("YouTube cookies loaded")
 
     except Exception:
         app.logger.exception("Cookie loading failed")
         raise RuntimeError("YouTube cookie loading failed")
+
 else:
     app.logger.warning("YouTube cookies variable is missing")
 
 
 # --------------------------------------------------
-# Channel IDs / URLs
+# CHANNELS
 # --------------------------------------------------
 
 CHANNELS = {
@@ -63,7 +75,7 @@ PLAYER_CLIENTS = [
 
 
 # --------------------------------------------------
-# Home
+# HOME
 # --------------------------------------------------
 
 @app.route("/")
@@ -78,7 +90,7 @@ def home():
 
 
 # --------------------------------------------------
-# Health
+# HEALTH
 # --------------------------------------------------
 
 @app.route("/health")
@@ -88,7 +100,7 @@ def health():
 
 
 # --------------------------------------------------
-# Diagnostics
+# DIAGNOSTICS
 # --------------------------------------------------
 
 @app.route("/diagnostics")
@@ -138,7 +150,7 @@ def diagnostics():
 
 
 # --------------------------------------------------
-# YouTube channel extraction
+# YOUTUBE EXTRACTION
 # --------------------------------------------------
 
 @app.route("/channel/<name>.m3u8")
@@ -146,18 +158,17 @@ def diagnostics():
 def youtube_channel(name):
 
     name = name.lower()
-    video_id = CHANNELS.get(name)
+    channel_source = CHANNELS.get(name)
 
-    if not video_id:
+    if not channel_source:
         return "Channel not found", 404
 
-    # Accept permanent live-page URLs as well as video IDs
-
-    if video_id.startswith("http"):
-        youtube_url = video_id
+    if channel_source.startswith("http"):
+        youtube_url = channel_source
     else:
         youtube_url = (
-            f"https://www.youtube.com/watch?v={video_id}"
+            "https://www.youtube.com/watch?v="
+            + channel_source
         )
 
     ydl_opts = {
@@ -183,9 +194,6 @@ def youtube_channel(name):
         }
     }
 
-    # BGUtil PO-token provider
-    # Local server: 127.0.0.1:4416
-
     if os.path.isfile(COOKIES_FILE):
         ydl_opts["cookiefile"] = COOKIES_FILE
 
@@ -195,6 +203,21 @@ def youtube_channel(name):
             "Starting YouTube extraction: %s | %s",
             name,
             youtube_url
+        )
+
+        app.logger.info(
+            "Player clients: %s",
+            PLAYER_CLIENTS
+        )
+
+        app.logger.info(
+            "Cookie file present: %s",
+            os.path.isfile(COOKIES_FILE)
+        )
+
+        app.logger.info(
+            "BGUtil server: %s",
+            POT_SERVER
         )
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -208,9 +231,7 @@ def youtube_channel(name):
 
         formats = info.get("formats", [])
 
-        # Update to the actual broadcast video ID
-        video_id = info.get("id", video_id)
-
+        video_id = info.get("id")
         live_status = info.get("live_status")
         is_live = info.get("is_live", False)
 
@@ -220,8 +241,6 @@ def youtube_channel(name):
             is_live,
             video_id
         )
-
-        # Log available formats
 
         app.logger.info(
             "AVAILABLE FORMATS: %s",
@@ -236,14 +255,14 @@ def youtube_channel(name):
             ]
         )
 
-        # --------------------------------------------------
-        # LIVE BROADCAST CHECK
-        # --------------------------------------------------
+        # ------------------------------------------
+        # LIVE CHECK
+        # ------------------------------------------
 
         if live_status != "is_live" and not is_live:
 
             app.logger.warning(
-                "%s is not currently reported as live",
+                "%s is not currently live",
                 name
             )
 
@@ -259,9 +278,9 @@ def youtube_channel(name):
                 )
             }), 503
 
-        # --------------------------------------------------
-        # ACCEPT GENUINE HLS ONLY
-        # --------------------------------------------------
+        # ------------------------------------------
+        # FIND HLS FORMATS
+        # ------------------------------------------
 
         hls_formats = [
             f for f in formats
@@ -291,9 +310,9 @@ def youtube_channel(name):
                 ]
             }), 502
 
-        # --------------------------------------------------
-        # SELECT HIGHEST QUALITY HLS
-        # --------------------------------------------------
+        # ------------------------------------------
+        # SELECT BEST HLS
+        # ------------------------------------------
 
         hls_formats.sort(
             key=lambda f: (
@@ -324,7 +343,7 @@ def youtube_channel(name):
 
         return jsonify({
             "channel": name,
-            "video_id": video_id,
+            "source": youtube_url,
             "player_clients": PLAYER_CLIENTS,
             "status": "error",
             "message": str(e)
@@ -370,8 +389,6 @@ def proxy_stream():
         "Origin": "https://www.youtube.com"
     }
 
-    # Forward byte-range requests if supplied
-
     if request.headers.get("Range"):
         headers["Range"] = request.headers["Range"]
 
@@ -400,9 +417,9 @@ def proxy_stream():
             or "mpegurl" in content_type.lower()
         )
 
-        # --------------------------------------------------
-        # REWRITE HLS PLAYLIST
-        # --------------------------------------------------
+        # ------------------------------------------
+        # REWRITE PLAYLIST
+        # ------------------------------------------
 
         if is_playlist:
 
@@ -463,27 +480,23 @@ def proxy_stream():
 
             response = Response(
                 "\n".join(lines) + "\n",
-                content_type=(
-                    "application/vnd.apple.mpegurl"
-                )
+                content_type="application/vnd.apple.mpegurl"
             )
 
             response.headers["Cache-Control"] = "no-store"
 
             return response
 
-        # --------------------------------------------------
-        # STREAM VIDEO / AUDIO SEGMENTS
-        # --------------------------------------------------
+        # ------------------------------------------
+        # VIDEO / AUDIO SEGMENTS
+        # ------------------------------------------
 
         def generate():
 
             try:
-
                 for chunk in req.iter_content(
                     chunk_size=16384
                 ):
-
                     if chunk:
                         yield chunk
 
@@ -496,14 +509,11 @@ def proxy_stream():
             content_type=content_type
         )
 
-        # Preserve relevant upstream headers
-
         for header in (
             "Content-Range",
             "Accept-Ranges",
             "Content-Length"
         ):
-
             if header in req.headers:
                 response.headers[header] = req.headers[header]
 
@@ -513,9 +523,7 @@ def proxy_stream():
 
     except Exception as e:
 
-        app.logger.exception(
-            "Proxy request failed"
-        )
+        app.logger.exception("Proxy request failed")
 
         return str(e), 500
 
@@ -526,9 +534,7 @@ def proxy_stream():
 
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get("PORT", 5000)
-    )
+    port = int(os.environ.get("PORT", 5000))
 
     app.run(
         host="0.0.0.0",
