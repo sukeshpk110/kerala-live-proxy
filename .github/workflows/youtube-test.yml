@@ -1,18 +1,12 @@
 
-name: YouTube Cookie Authentication Test
+name: Test YouTube Extraction
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-youtube:
+  test:
     runs-on: ubuntu-latest
-
-    services:
-      pot:
-        image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
-        ports:
-          - 4416:4416
 
     steps:
       - name: Set up Python
@@ -20,45 +14,35 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Install yt-dlp and BGUtil plugin
+      - name: Install yt-dlp
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
-
-      - name: Prepare private YouTube cookies
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          data = os.environ.get("YOUTUBE_COOKIES", "")
-          if not data.strip():
-              raise SystemExit("YOUTUBE_COOKIES secret is empty")
-
-          path = Path("cookies.txt")
-          path.write_text(data, encoding="utf-8")
-          path.chmod(0o600)
-          print("Private cookies file created.")
-          PY
+          python -m pip install --upgrade "yt-dlp[default]"
 
       - name: Test Amrita News
-        continue-on-error: true
+        env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
-          python -m yt_dlp -v -F --cookies cookies.txt --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=0JE1N_HQc1M"
+          set -e
+          trap 'rm -f cookies.txt' EXIT
 
-      - name: Test Kerala Vision News
-        continue-on-error: true
-        run: |
-          python -m yt_dlp -v -F --cookies cookies.txt --extractor-args "youtube:player-client=mweb,tv,web_safari" "https://www.youtube.com/watch?v=3446A6FzW3o"
+          python - <<'PY'
+          import os
+          import base64
+          from pathlib import Path
 
-      - name: Remove private cookies
-        if: always()
-        run: |
-          rm -f cookies.txt
+          value = os.environ.get("YOUTUBE_COOKIES_B64", "")
+          if not value:
+              raise SystemExit("ERROR: GitHub cookie secret is missing")
+
+          data = base64.b64decode(value, validate=True)
+          Path("cookies.txt").write_bytes(data)
+
+          print("Cookie file loaded:", len(data), "bytes")
+          PY
+
+          yt-dlp \
+            --cookies cookies.txt \
+            --skip-download \
+            --no-warnings \
+            --print "%(id)s | %(live_status)s | %(title)s" \
+            "https://www.youtube.com/@AmritaNews/live"
